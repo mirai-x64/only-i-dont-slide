@@ -1,0 +1,391 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>私だけ滑らない</title>
+<style>
+  html,body{margin:0;height:100%;background:#20242b;color:#d8d3c4;
+    font-family:"Hiragino Kaku Gothic ProN","Yu Gothic",system-ui,sans-serif;}
+  #wrap{height:100%;display:flex;align-items:center;justify-content:center;}
+  canvas{background:#20242b;image-rendering:auto;max-width:100%;max-height:100%;
+    box-shadow:0 0 60px #0008;}
+</style>
+</head>
+<body>
+<div id="wrap"><canvas id="cv" width="960" height="640"></canvas></div>
+<script>
+"use strict";
+// ---------------------------------------------------------------------------
+// 私だけ滑らない / only-i-dont-slide
+//
+// 盤(解答用紙)は傾きに応じて素直に平行移動するだけ。等速で、キーを離せば即止まる。
+// 他の受験者の玉と鉛筆は盤とは別物で、傾きを加速度として受け、慣性で滑り続け、
+// 壁で跳ね返る。だから両者は決して一体では動かない。
+// 自分の玉だけが画面に貼り付いて動かない。
+// ---------------------------------------------------------------------------
+
+const W = 960, H = 640, CX = W / 2, CY = H / 2;
+
+const BOARD_SPEED = 190;   // 盤の平行移動速度(px/s)。加速も慣性もない
+const ACCEL       = 460;   // 滑る物体が傾きから受ける加速度(px/s^2)
+const DAMP        = 1.05;  // 滑る物体の減衰(1/s)。終端速度 ≒ ACCEL/DAMP
+const REST        = 0.86;  // 壁の反発係数
+const GRAB        = 15;    // 穴に落ちたと判定する距離
+
+const SHEET = { x: 0, y: 0, w: 1600, h: 1100 };
+
+// 解答用紙の枠と仕切り。切れ目は「切り取り線」で、そこから盤の外へ落ちる。
+const WALLS = [
+  // 上辺(切れ目 700..860)
+  { x: 0, y: 0, w: 700, h: 24 }, { x: 860, y: 0, w: 740, h: 24 },
+  // 下辺(切れ目 620..780)
+  { x: 0, y: 1076, w: 620, h: 24 }, { x: 780, y: 1076, w: 820, h: 24 },
+  // 左辺(切れ目 420..600)
+  { x: 0, y: 0, w: 24, h: 420 }, { x: 0, y: 600, w: 24, h: 500 },
+  // 右辺(切れ目 460..640)
+  { x: 1576, y: 0, w: 24, h: 460 }, { x: 1576, y: 640, w: 24, h: 460 },
+  // 解答欄の仕切り
+  { x: 700, y: 150, w: 22, h: 250 },
+  { x: 1060, y: 700, w: 22, h: 260 },
+  { x: 360, y: 780, w: 300, h: 22 },
+  { x: 1180, y: 180, w: 240, h: 22 },
+];
+
+// 塗り潰された丸だけが穴。ok:true が自分の解答欄。
+const HOLES = [
+  { x: 1250, y: 560, r: 26, ok: true,  label: "θ" },
+  { x:  640, y: 560, r: 24, ok: false, label: "a" },
+  { x:  950, y: 618, r: 24, ok: false, label: "b" },
+  { x: 1105, y: 486, r: 24, ok: false, label: "c" },
+  { x:  430, y: 300, r: 24, ok: false, label: "u" },
+  { x:  880, y: 920, r: 24, ok: false, label: "P" },
+];
+
+const START_CAM = { x: 330, y: 560 };
+
+const MOVERS = [
+  { x:  830, y: 560, r: 12, kind: "ball"   },
+  { x:  505, y: 305, r: 12, kind: "ball"   },
+  { x: 1180, y: 830, r: 12, kind: "ball"   },
+  { x:  980, y: 300, r: 10, kind: "pencil" },
+  { x:  600, y: 900, r: 10, kind: "pencil" },
+];
+
+// --- シミュレーション(描画から独立。ヘッドレス検証でそのまま回す)----------
+
+function newState() {
+  return {
+    t: 0,
+    cam: { x: START_CAM.x, y: START_CAM.y },
+    player: { x: START_CAM.x, y: START_CAM.y, vx: 0, vy: 0, r: 13, stuck: true },
+    movers: MOVERS.map(m => ({ x: m.x, y: m.y, vx: 0, vy: 0, r: m.r,
+                               kind: m.kind, ang: 0, alive: true })),
+    status: "play",
+    msg: "",
+    shake: 0,
+  };
+}
+
+// 円 vs AABB。跳ね返して押し出す。
+function hitWall(b, w) {
+  const cx = Math.max(w.x, Math.min(b.x, w.x + w.w));
+  const cy = Math.max(w.y, Math.min(b.y, w.y + w.h));
+  let dx = b.x - cx, dy = b.y - cy;
+  let d2 = dx * dx + dy * dy;
+  if (d2 >= b.r * b.r) return false;
+  let d = Math.sqrt(d2);
+  if (d < 1e-6) { // 中心が矩形内。最も近い辺へ抜く
+    const L = b.x - w.x, R = w.x + w.w - b.x, T = b.y - w.y, B = w.y + w.h - b.y;
+    const m = Math.min(L, R, T, B);
+    dx = (m === L) ? -1 : (m === R) ? 1 : 0;
+    dy = (m === T) ? -1 : (m === B) ? 1 : 0;
+    d = 1;
+  } else { dx /= d; dy /= d; }
+  b.x += dx * (b.r - d); b.y += dy * (b.r - d);
+  const vn = b.vx * dx + b.vy * dy;
+  if (vn < 0) { b.vx -= (1 + REST) * vn * dx; b.vy -= (1 + REST) * vn * dy; }
+  return true;
+}
+
+function outside(b) {
+  return b.x < SHEET.x - b.r || b.x > SHEET.x + SHEET.w + b.r ||
+         b.y < SHEET.y - b.r || b.y > SHEET.y + SHEET.h + b.r;
+}
+
+function step(s, dt, input) {
+  if (s.status !== "play") { s.shake = Math.max(0, s.shake - dt * 4); return s; }
+  s.t += dt;
+
+  let ix = input.x, iy = input.y;
+  const il = Math.hypot(ix, iy);
+  if (il > 1) { ix /= il; iy /= il; }
+
+  // --- 盤。傾いた方向へ素直に平行移動する。加速も慣性もない ---
+  s.cam.x -= ix * BOARD_SPEED * dt;
+  s.cam.y -= iy * BOARD_SPEED * dt;
+
+  // --- 滑る側。傾きは加速度として効き、離しても慣性で滑り続ける ---
+  const decay = Math.exp(-DAMP * dt);
+  for (const m of s.movers) {
+    if (!m.alive) continue;
+    m.vx = (m.vx + ix * ACCEL * dt) * decay;
+    m.vy = (m.vy + iy * ACCEL * dt) * decay;
+    m.x += m.vx * dt; m.y += m.vy * dt;
+    for (const w of WALLS) hitWall(m, w);
+    m.ang += Math.hypot(m.vx, m.vy) * dt / (m.r * 1.6);
+    if (outside(m)) m.alive = false;   // 切り取り線から盤の外へ滑り落ちた
+  }
+
+  const p = s.player;
+  if (p.stuck) {
+    // 自分だけは画面に貼り付いていて、盤の上を相対的に動かされるだけ
+    p.x = s.cam.x; p.y = s.cam.y; p.vx = 0; p.vy = 0;
+    for (const m of s.movers) {
+      if (!m.alive) continue;
+      const d = Math.hypot(m.x - p.x, m.y - p.y);
+      if (d < m.r + p.r) {
+        p.stuck = false;                       // 貼り付きが剥がれた
+        p.vx = m.vx * 0.75; p.vy = m.vy * 0.75;
+        m.vx *= -0.3; m.vy *= -0.3;
+        s.shake = 1;
+        break;
+      }
+    }
+  } else {
+    p.vx = (p.vx + ix * ACCEL * dt) * decay;
+    p.vy = (p.vy + iy * ACCEL * dt) * decay;
+    p.x += p.vx * dt; p.y += p.vy * dt;
+    for (const w of WALLS) hitWall(p, w);
+    if (outside(p)) { s.status = "fail"; s.msg = "盤の外へ滑り落ちた"; return s; }
+    // 剥がれた後もカメラは傾きに従う。自機が画面から出ないぶんだけ寄せる
+    const sx = p.x - s.cam.x, sy = p.y - s.cam.y;
+    const M = 200;
+    if (sx >  M) s.cam.x += sx - M; if (sx < -M) s.cam.x += sx + M;
+    if (sy >  M) s.cam.y += sy - M; if (sy < -M) s.cam.y += sy + M;
+  }
+
+  // 塗り潰された丸に落ちる。貼り付いていても滑っていても同じ判定
+  for (const h of HOLES) {
+    if (Math.hypot(h.x - p.x, h.y - p.y) < GRAB) {
+      if (h.ok) { s.status = "clear"; s.msg = "自分の解答欄を塗り潰した"; }
+      else      { s.status = "fail";  s.msg = "他人の解答欄に落ちた"; }
+      return s;
+    }
+  }
+  return s;
+}
+
+// --- 入力 -------------------------------------------------------------------
+
+const keys = Object.create(null);
+const KEYMAP = { ArrowLeft:"L", ArrowRight:"R", ArrowUp:"U", ArrowDown:"D",
+                 a:"L", d:"R", w:"U", s:"D", A:"L", D:"R", W:"U", S:"D" };
+addEventListener("keydown", e => {
+  if (KEYMAP[e.key]) { keys[KEYMAP[e.key]] = true; e.preventDefault(); }
+  if (e.key === "r" || e.key === "R") state = newState();
+});
+addEventListener("keyup", e => { if (KEYMAP[e.key]) { keys[KEYMAP[e.key]] = false; e.preventDefault(); } });
+addEventListener("blur", () => { for (const k in keys) keys[k] = false; });
+
+function readInput() {
+  return { x: (keys.R ? 1 : 0) - (keys.L ? 1 : 0),
+           y: (keys.D ? 1 : 0) - (keys.U ? 1 : 0) };
+}
+
+// --- 描画 -------------------------------------------------------------------
+
+const cv = document.getElementById("cv"), g = cv.getContext("2d");
+
+function sx(s, x) { return x - s.cam.x + CX; }
+function sy(s, y) { return y - s.cam.y + CY; }
+
+function drawSheet(s) {
+  const X = sx(s, SHEET.x), Y = sy(s, SHEET.y);
+  g.fillStyle = "#efe9d8";
+  g.fillRect(X, Y, SHEET.w, SHEET.h);
+
+  // 罫線
+  g.strokeStyle = "#ded5bd"; g.lineWidth = 1;
+  g.beginPath();
+  for (let x = 80; x < SHEET.w; x += 80) { g.moveTo(X + x, Y); g.lineTo(X + x, Y + SHEET.h); }
+  for (let y = 80; y < SHEET.h; y += 80) { g.moveTo(X, Y + y); g.lineTo(X + SHEET.w, Y + y); }
+  g.stroke();
+
+  // 未記入のマーク欄(ただの印刷。穴ではない)
+  g.strokeStyle = "#c8bfa4"; g.lineWidth = 2;
+  for (let r = 0; r < 11; r++) {
+    for (let c = 0; c < 15; c++) {
+      const px = X + 90 + c * 100, py = Y + 95 + r * 95;
+      if (px < -40 || px > W + 40 || py < -40 || py > H + 40) continue;
+      g.beginPath(); g.arc(px, py, 13, 0, 7); g.stroke();
+    }
+  }
+
+  // 切り取り線(枠の切れ目)
+  g.setLineDash([9, 7]); g.strokeStyle = "#b03a2e"; g.lineWidth = 3;
+  const cuts = [[700,0,860,0],[620,1100,780,1100],[0,420,0,600],[1600,460,1600,640]];
+  for (const [x1,y1,x2,y2] of cuts) {
+    g.beginPath(); g.moveTo(X+x1, Y+y1); g.lineTo(X+x2, Y+y2); g.stroke();
+  }
+  g.setLineDash([]);
+
+  // 枠・仕切り
+  for (const w of WALLS) {
+    g.fillStyle = "#3b3630";
+    g.fillRect(X + w.x, Y + w.y, w.w, w.h);
+    g.fillStyle = "#5d564c";
+    g.fillRect(X + w.x, Y + w.y, w.w, Math.min(4, w.h));
+  }
+
+  // 塗り潰された丸 = 穴
+  for (const h of HOLES) {
+    const px = X + h.x, py = Y + h.y;
+    if (px < -60 || px > W + 60 || py < -60 || py > H + 60) continue;
+    g.fillStyle = "#0e0d0c";
+    g.beginPath(); g.arc(px, py, h.r, 0, 7); g.fill();
+    if (h.ok) {
+      g.strokeStyle = "#c0392b"; g.lineWidth = 3;
+      g.beginPath(); g.arc(px, py, h.r + 9, 0, 7); g.stroke();
+      g.beginPath(); g.arc(px, py, h.r + 15, 0, 7); g.stroke();
+    }
+    g.fillStyle = h.ok ? "#c0392b" : "#6b6357";
+    g.font = "bold 15px serif"; g.textAlign = "center";
+    g.fillText(h.label, px, py + h.r + 28);
+  }
+}
+
+function drawMover(s, m) {
+  const px = sx(s, m.x), py = sy(s, m.y);
+  if (px < -60 || px > W + 60 || py < -60 || py > H + 60) return;
+  const sp = Math.hypot(m.vx, m.vy);
+  // 滑走の尾
+  if (sp > 30) {
+    g.strokeStyle = "rgba(60,55,48,0.18)"; g.lineWidth = m.r * 1.4;
+    g.lineCap = "round"; g.beginPath();
+    g.moveTo(px, py); g.lineTo(px - m.vx * 0.09, py - m.vy * 0.09); g.stroke();
+  }
+  if (m.kind === "pencil") {
+    g.save(); g.translate(px, py); g.rotate(m.ang);
+    g.fillStyle = "#d8a018"; g.fillRect(-30, -m.r * 0.6, 48, m.r * 1.2);
+    g.fillStyle = "#e8cfa0"; g.beginPath();
+    g.moveTo(18, -m.r * 0.6); g.lineTo(32, 0); g.lineTo(18, m.r * 0.6); g.fill();
+    g.fillStyle = "#26221d"; g.beginPath();
+    g.moveTo(28, -m.r * 0.22); g.lineTo(32, 0); g.lineTo(28, m.r * 0.22); g.fill();
+    g.fillStyle = "#c96a6a"; g.fillRect(-34, -m.r * 0.6, 5, m.r * 1.2);
+    g.restore();
+  } else {
+    const gr = g.createRadialGradient(px - m.r * .4, py - m.r * .4, 1, px, py, m.r);
+    gr.addColorStop(0, "#8d8579"); gr.addColorStop(1, "#37322b");
+    g.fillStyle = gr; g.beginPath(); g.arc(px, py, m.r, 0, 7); g.fill();
+  }
+}
+
+function drawPlayer(s) {
+  const p = s.player;
+  const px = sx(s, p.x), py = sy(s, p.y);
+  if (p.stuck) {
+    // 動かないことを示す固定の十字
+    g.strokeStyle = "rgba(30,90,160,0.35)"; g.lineWidth = 2;
+    g.beginPath();
+    g.moveTo(px - 30, py); g.lineTo(px + 30, py);
+    g.moveTo(px, py - 30); g.lineTo(px, py + 30); g.stroke();
+  } else {
+    g.strokeStyle = "rgba(180,50,40,0.5)"; g.lineWidth = 3;
+    g.beginPath();
+    g.moveTo(px, py); g.lineTo(px - p.vx * 0.12, py - p.vy * 0.12); g.stroke();
+  }
+  const gr = g.createRadialGradient(px - 5, py - 5, 1, px, py, p.r);
+  gr.addColorStop(0, p.stuck ? "#7fc3f5" : "#f2a08a");
+  gr.addColorStop(1, p.stuck ? "#14548c" : "#93321f");
+  g.fillStyle = gr; g.beginPath(); g.arc(px, py, p.r, 0, 7); g.fill();
+  g.strokeStyle = "#fff8"; g.lineWidth = 1.5;
+  g.beginPath(); g.arc(px, py, p.r, 0, 7); g.stroke();
+}
+
+function drawHud(s) {
+  // 得点欄。ラベルだけ項目反応理論から借りている(ルールには関与しない)
+  g.fillStyle = "rgba(24,27,32,0.86)";
+  g.fillRect(0, 0, 196, 132);
+  g.fillStyle = "#8fa4bd"; g.font = "12px monospace"; g.textAlign = "left";
+  g.fillText("採点欄 / SCORING", 12, 22);
+  g.fillStyle = "#d8d3c4"; g.font = "12px monospace";
+  const rows = [["識別力  a", "1.42"], ["困難度  b", "0.87"],
+                ["当て推量 c", "0.20"], ["情報量 I(θ)", "3.06"]];
+  rows.forEach((r, i) => {
+    g.fillStyle = "#6f7f94"; g.fillText(r[0], 12, 48 + i * 20);
+    g.fillStyle = "#d8d3c4"; g.textAlign = "right";
+    g.fillText(r[1], 184, 48 + i * 20); g.textAlign = "left";
+  });
+
+  const inp = readInput();
+  g.fillStyle = "rgba(24,27,32,0.86)"; g.fillRect(W - 176, 0, 176, 78);
+  g.fillStyle = "#6f7f94"; g.font = "12px monospace";
+  g.fillText("盤の傾き", W - 164, 22);
+  g.strokeStyle = "#4b5563"; g.lineWidth = 2;
+  g.beginPath(); g.arc(W - 46, 40, 24, 0, 7); g.stroke();
+  g.strokeStyle = "#7fc3f5"; g.lineWidth = 4; g.beginPath();
+  g.moveTo(W - 46, 40); g.lineTo(W - 46 + inp.x * 22, 40 + inp.y * 22); g.stroke();
+  g.fillStyle = "#9aa7b8"; g.font = "11px monospace";
+  g.fillText(s.player.stuck ? "貼付: 固定" : "貼付: 剥離", W - 164, 44);
+  g.fillText("R: やり直し", W - 164, 62);
+
+  if (s.status !== "play") {
+    g.fillStyle = "rgba(12,14,18,0.72)"; g.fillRect(0, CY - 78, W, 156);
+    g.textAlign = "center";
+    g.fillStyle = s.status === "clear" ? "#7fe0a0" : "#f08a72";
+    g.font = "bold 46px serif";
+    g.fillText(s.status === "clear" ? "解答完了" : "失格", CX, CY - 12);
+    g.fillStyle = "#d8d3c4"; g.font = "17px sans-serif";
+    g.fillText(s.msg, CX, CY + 26);
+    g.fillStyle = "#8fa4bd"; g.font = "14px monospace";
+    g.fillText("R でやり直し", CX, CY + 58);
+    g.textAlign = "left";
+  } else if (s.t < 6) {
+    g.globalAlpha = Math.max(0, 1 - s.t / 6);
+    g.fillStyle = "rgba(12,14,18,0.7)"; g.fillRect(CX - 250, H - 74, 500, 52);
+    g.fillStyle = "#d8d3c4"; g.font = "14px sans-serif"; g.textAlign = "center";
+    g.fillText("方向キーで用紙が傾く。自分の玉だけは動かない。", CX, H - 52);
+    g.fillText("二重丸を自分の真下へ引き寄せる。", CX, H - 32);
+    g.textAlign = "left"; g.globalAlpha = 1;
+  }
+}
+
+function render(s) {
+  g.setTransform(1, 0, 0, 1, 0, 0);
+  g.fillStyle = "#20242b"; g.fillRect(0, 0, W, H);
+  if (s.shake > 0) {
+    const k = s.shake * 7;
+    g.setTransform(1, 0, 0, 1, (s.t * 97 % 2 - 1) * k, (s.t * 53 % 2 - 1) * k);
+  }
+  drawSheet(s);
+  for (const m of s.movers) if (m.alive) drawMover(s, m);
+  drawPlayer(s);
+  g.setTransform(1, 0, 0, 1, 0, 0);
+  drawHud(s);
+}
+
+// --- ループ(固定タイムステップ)-------------------------------------------
+
+let state = newState();
+let last = 0, acc = 0;
+const DT = 1 / 120;
+
+function frame(now) {
+  if (!last) last = now;
+  acc += Math.min(0.25, (now - last) / 1000); last = now;
+  const inp = readInput();
+  while (acc >= DT) { step(state, DT, inp); acc -= DT; }
+  if (state.shake > 0 && state.status === "play") state.shake = Math.max(0, state.shake - DT * 4);
+  render(state);
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+
+// ヘッドレス検証用。描画に触れずに同じ物理を回す
+window.SIMAPI = { newState, step, DT, HOLES, WALLS, MOVERS, START_CAM,
+                  BOARD_SPEED, ACCEL, DAMP,
+                  get state() { return state; }, set state(v) { state = v; } };
+</script>
+</body>
+</html>
