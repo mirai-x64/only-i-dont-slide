@@ -36,40 +36,60 @@ const GRAB        = 15;    // 穴に落ちたと判定する距離
 const SHEET = { x: 0, y: 0, w: 1600, h: 1100 };
 
 // 解答用紙の枠と仕切り。切れ目は「切り取り線」で、そこから盤の外へ落ちる。
+//
+// 1面の骨格:
+//   左の解答欄(出発)—— 横一本の細い記入欄 —— 右の解答欄(自分の欄 θ)
+// 記入欄は玉が横に並べない幅しかない。だから欄の中で他の玉と正面から出会うと
+// すれ違えず、引き寄せる傾き(左)を続ける限り必ず当たる。
+// 欄の床には一箇所だけ切り取り線の穴が開いていて、下へ傾け続ければ他の玉を
+// そこから用紙の外へ落とせる。ただし下への傾きは自分の欄を一切引き寄せない。
 const WALLS = [
-  // 上辺(切れ目 700..860)
+  // 外枠。上辺の切れ目 700..860、下辺の切れ目 900..960(記入欄の落とし穴の出口)
   { x: 0, y: 0, w: 700, h: 24 }, { x: 860, y: 0, w: 740, h: 24 },
-  // 下辺(切れ目 620..780)
-  { x: 0, y: 1076, w: 620, h: 24 }, { x: 780, y: 1076, w: 820, h: 24 },
-  // 左辺(切れ目 420..600)
-  { x: 0, y: 0, w: 24, h: 420 }, { x: 0, y: 600, w: 24, h: 500 },
-  // 右辺(切れ目 460..640)
-  { x: 1576, y: 0, w: 24, h: 460 }, { x: 1576, y: 640, w: 24, h: 460 },
-  // 解答欄の仕切り
-  { x: 700, y: 150, w: 22, h: 250 },
-  { x: 1060, y: 700, w: 22, h: 260 },
-  { x: 360, y: 780, w: 300, h: 22 },
-  { x: 1180, y: 180, w: 240, h: 22 },
+  { x: 0, y: 1076, w: 900, h: 24 }, { x: 960, y: 1076, w: 640, h: 24 },
+  { x: 0, y: 0, w: 24, h: 1100 },
+  { x: 1576, y: 0, w: 24, h: 200 }, { x: 1576, y: 320, w: 24, h: 780 },
+
+  // 左の解答欄(出発)
+  { x: 24, y: 430, w: 380, h: 22 }, { x: 24, y: 700, w: 380, h: 22 },
+  { x: 382, y: 452, w: 22, h: 85 }, { x: 382, y: 583, w: 22, h: 117 },
+
+  // 記入欄(内側 y 537..583。玉が横に並べない幅)
+  { x: 404, y: 497, w: 716, h: 40 },
+  { x: 404, y: 583, w: 496, h: 40 },   // 床。x 900..960 が抜けている
+  { x: 960, y: 583, w: 160, h: 40 },
+
+  // 落とし穴の縦樋。下辺の切れ目までまっすぐ落ちる
+  { x: 878, y: 623, w: 22, h: 453 }, { x: 960, y: 623, w: 22, h: 453 },
+
+  // 右の解答欄(自分の欄)
+  { x: 1120, y: 430, w: 352, h: 22 }, { x: 1120, y: 700, w: 352, h: 22 },
+  { x: 1120, y: 452, w: 22, h: 85 }, { x: 1120, y: 583, w: 22, h: 117 },
+  { x: 1450, y: 430, w: 22, h: 292 },
+
+  // 余白の仕切り(印刷された枠)
+  { x: 300, y: 180, w: 240, h: 22 },
+  { x: 1180, y: 860, w: 240, h: 22 },
 ];
 
 // 塗り潰された丸だけが穴。ok:true が自分の解答欄。
 const HOLES = [
-  { x: 1250, y: 560, r: 26, ok: true,  label: "θ" },
-  { x:  640, y: 560, r: 24, ok: false, label: "a" },
-  { x:  950, y: 618, r: 24, ok: false, label: "b" },
-  { x: 1105, y: 486, r: 24, ok: false, label: "c" },
-  { x:  430, y: 300, r: 24, ok: false, label: "u" },
-  { x:  880, y: 920, r: 24, ok: false, label: "P" },
+  { x: 1290, y: 560, r: 26, ok: true,  label: "θ" },
+  { x: 1200, y: 490, r: 24, ok: false, label: "a" },
+  { x: 1390, y: 645, r: 24, ok: false, label: "b" },
+  { x:  150, y: 480, r: 24, ok: false, label: "c" },
+  { x:  300, y: 660, r: 24, ok: false, label: "u" },
+  { x:  500, y: 250, r: 24, ok: false, label: "P" },
 ];
 
-const START_CAM = { x: 330, y: 560 };
+const START_CAM = { x: 250, y: 560 };
 
 const MOVERS = [
-  { x:  830, y: 560, r: 12, kind: "ball"   },
-  { x:  505, y: 305, r: 12, kind: "ball"   },
-  { x: 1180, y: 830, r: 12, kind: "ball"   },
-  { x:  980, y: 300, r: 10, kind: "pencil" },
-  { x:  600, y: 900, r: 10, kind: "pencil" },
+  { x:  860, y: 560, r: 12, kind: "ball"   },  // 記入欄で待ち構えている一人
+  { x: 1330, y: 480, r: 12, kind: "ball"   },
+  { x:  520, y: 900, r: 12, kind: "ball"   },
+  { x:  900, y: 240, r: 10, kind: "pencil" },
+  { x:  180, y: 630, r: 10, kind: "pencil" },
 ];
 
 // --- シミュレーション(描画から独立。ヘッドレス検証でそのまま回す)----------
@@ -108,6 +128,32 @@ function hitWall(b, w) {
   return true;
 }
 
+// 貼り付いている自分は壁をすり抜けない。自分は画面に固定されているので、
+// 押し込む向きへは「盤の方が動けなくなる」という形で効く。軸ごとに解決するので
+// 壁沿いには滑る。
+function blockCam(cam, r, dx, dy) {
+  cam.x += dx;
+  for (const w of WALLS) {
+    const cy = Math.max(w.y, Math.min(cam.y, w.y + w.h));
+    const oy = cam.y - cy;
+    if (Math.abs(oy) >= r) continue;
+    const need = Math.sqrt(r * r - oy * oy);
+    if (cam.x > w.x - need && cam.x < w.x + w.w + need) {
+      cam.x = (cam.x < w.x + w.w * 0.5) ? w.x - need : w.x + w.w + need;
+    }
+  }
+  cam.y += dy;
+  for (const w of WALLS) {
+    const cx = Math.max(w.x, Math.min(cam.x, w.x + w.w));
+    const ox = cam.x - cx;
+    if (Math.abs(ox) >= r) continue;
+    const need = Math.sqrt(r * r - ox * ox);
+    if (cam.y > w.y - need && cam.y < w.y + w.h + need) {
+      cam.y = (cam.y < w.y + w.h * 0.5) ? w.y - need : w.y + w.h + need;
+    }
+  }
+}
+
 function outside(b) {
   return b.x < SHEET.x - b.r || b.x > SHEET.x + SHEET.w + b.r ||
          b.y < SHEET.y - b.r || b.y > SHEET.y + SHEET.h + b.r;
@@ -122,8 +168,13 @@ function step(s, dt, input) {
   if (il > 1) { ix /= il; iy /= il; }
 
   // --- 盤。傾いた方向へ素直に平行移動する。加速も慣性もない ---
-  s.cam.x -= ix * BOARD_SPEED * dt;
-  s.cam.y -= iy * BOARD_SPEED * dt;
+  // ただし貼り付いている自分に枠がぶつかる向きへは進めない(これが迷路になる)
+  if (s.player.stuck) {
+    blockCam(s.cam, s.player.r, -ix * BOARD_SPEED * dt, -iy * BOARD_SPEED * dt);
+  } else {
+    s.cam.x -= ix * BOARD_SPEED * dt;
+    s.cam.y -= iy * BOARD_SPEED * dt;
+  }
 
   // --- 滑る側。傾きは加速度として効き、離しても慣性で滑り続ける ---
   const decay = Math.exp(-DAMP * dt);
@@ -224,7 +275,8 @@ function drawSheet(s) {
 
   // 切り取り線(枠の切れ目)
   g.setLineDash([9, 7]); g.strokeStyle = "#b03a2e"; g.lineWidth = 3;
-  const cuts = [[700,0,860,0],[620,1100,780,1100],[0,420,0,600],[1600,460,1600,640]];
+  const cuts = [[700,0,860,0],[900,1100,960,1100],[1600,200,1600,320],
+                [900,603,960,603]];   // 記入欄の床の切れ目
   for (const [x1,y1,x2,y2] of cuts) {
     g.beginPath(); g.moveTo(X+x1, Y+y1); g.lineTo(X+x2, Y+y2); g.stroke();
   }
