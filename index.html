@@ -52,15 +52,20 @@ const WALLS = [
 
   // 左の解答欄(出発)
   { x: 24, y: 430, w: 380, h: 22 }, { x: 24, y: 700, w: 380, h: 22 },
-  { x: 382, y: 452, w: 22, h: 85 }, { x: 382, y: 583, w: 22, h: 117 },
+  { x: 382, y: 452, w: 22, h: 45 }, { x: 382, y: 623, w: 22, h: 77 },
 
   // 記入欄(内側 y 537..583。玉が横に並べない幅)
-  { x: 404, y: 497, w: 716, h: 40 },
-  { x: 404, y: 583, w: 496, h: 40 },   // 床。x 900..960 が抜けている
-  { x: 960, y: 583, w: 160, h: 40 },
+  // 入口だけは段々に広げてある。狭いまま口を探させるのは意地悪すぎる
+  { x: 404, y: 437, w:  20, h:  60 },  // 入口 天井 497
+  { x: 424, y: 437, w:  20, h:  80 },  //      天井 517
+  { x: 444, y: 437, w: 676, h: 100 },  //      天井 537(ここから先が本番)
+  { x: 404, y: 623, w:  20, h:  60 },  // 入口 床 623
+  { x: 424, y: 603, w:  20, h:  80 },  //      床 603
+  { x: 444, y: 583, w: 456, h: 100 },  //      床 583。x 900..960 が抜けている
+  { x: 960, y: 583, w: 160, h: 100 },
 
   // 落とし穴の縦樋。下辺の切れ目までまっすぐ落ちる
-  { x: 878, y: 623, w: 22, h: 453 }, { x: 960, y: 623, w: 22, h: 453 },
+  { x: 878, y: 683, w: 22, h: 393 }, { x: 960, y: 683, w: 22, h: 393 },
 
   // 右の解答欄(自分の欄)
   { x: 1120, y: 430, w: 352, h: 22 }, { x: 1120, y: 700, w: 352, h: 22 },
@@ -79,17 +84,19 @@ const HOLES = [
   { x: 1390, y: 645, r: 24, ok: false, label: "b" },
   { x:  150, y: 480, r: 24, ok: false, label: "c" },
   { x:  300, y: 660, r: 24, ok: false, label: "u" },
-  { x:  500, y: 250, r: 24, ok: false, label: "P" },
+  { x: 1250, y: 662, r: 24, ok: false, label: "P" },
 ];
 
 const START_CAM = { x: 250, y: 560 };
 
+// 記入欄に入れるのは一人だけ。二人並ぶと避ける余地が消えて詰みになる。
+// 残りは余白を滑る。届かないが、傾けるたびに一斉に動くので嫌でも目に入る。
 const MOVERS = [
   { x:  860, y: 560, r: 12, kind: "ball"   },  // 記入欄で待ち構えている一人
-  { x: 1330, y: 480, r: 12, kind: "ball"   },
-  { x:  520, y: 900, r: 12, kind: "ball"   },
-  { x:  900, y: 240, r: 10, kind: "pencil" },
-  { x:  180, y: 630, r: 10, kind: "pencil" },
+  { x:  180, y: 630, r: 10, kind: "pencil" },  // 出発の欄に転がっている鉛筆
+  { x:  700, y: 300, r: 12, kind: "ball"   },
+  { x: 1300, y: 950, r: 12, kind: "ball"   },
+  { x:  520, y: 900, r: 10, kind: "pencil" },
 ];
 
 // --- シミュレーション(描画から独立。ヘッドレス検証でそのまま回す)----------
@@ -98,7 +105,7 @@ function newState() {
   return {
     t: 0,
     cam: { x: START_CAM.x, y: START_CAM.y },
-    player: { x: START_CAM.x, y: START_CAM.y, vx: 0, vy: 0, r: 13, stuck: true },
+    player: { x: START_CAM.x, y: START_CAM.y, vx: 0, vy: 0, r: 13, stuck: true, slip: 0 },
     movers: MOVERS.map(m => ({ x: m.x, y: m.y, vx: 0, vy: 0, r: m.r,
                                kind: m.kind, ang: 0, alive: true })),
     status: "play",
@@ -197,6 +204,7 @@ function step(s, dt, input) {
       const d = Math.hypot(m.x - p.x, m.y - p.y);
       if (d < m.r + p.r) {
         p.stuck = false;                       // 貼り付きが剥がれた
+        p.slip = 0;
         p.vx = m.vx * 0.75; p.vy = m.vy * 0.75;
         m.vx *= -0.3; m.vy *= -0.3;
         s.shake = 1;
@@ -208,7 +216,10 @@ function step(s, dt, input) {
     p.vy = (p.vy + iy * ACCEL * dt) * decay;
     p.x += p.vx * dt; p.y += p.vy * dt;
     for (const w of WALLS) hitWall(p, w);
-    if (outside(p)) { s.status = "fail"; s.msg = "盤の外へ滑り落ちた"; return s; }
+    if (outside(p)) { s.status = "fail"; s.msg = "切り取り線から答案の外へ落ちた"; return s; }
+    // 一度剥がれたらもう答案の上には留まれない。落ちるまでの猶予だけがある
+    p.slip += dt;
+    if (p.slip > 4) { s.status = "fail"; s.msg = "手が離れ、答案の上を流された"; return s; }
     // 剥がれた後もカメラは傾きに従う。自機が画面から出ないぶんだけ寄せる
     const sx = p.x - s.cam.x, sy = p.y - s.cam.y;
     const M = 200;
