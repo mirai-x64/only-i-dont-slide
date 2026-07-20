@@ -366,7 +366,32 @@ function drawPlayer(s) {
   g.beginPath(); g.arc(px, py, p.r, 0, 7); g.stroke();
 }
 
+// 画面の外にいるものを縁に印で出す。落とし穴へ追い込む相手は自分から離れた所に
+// いるので、印が無いと「何をしているのか」が見えないまま終わる。
+function edgeMark(s, wx, wy, col, tag) {
+  const px = sx(s, wx), py = sy(s, wy);
+  if (px > 16 && px < W - 16 && py > 16 && py < H - 16) return;
+  const dx = px - CX, dy = py - CY;
+  const k = Math.min((CX - 26) / Math.max(1, Math.abs(dx)),
+                     (CY - 26) / Math.max(1, Math.abs(dy)));
+  const ex = CX + dx * k, ey = CY + dy * k;
+  const a = Math.atan2(dy, dx);
+  g.save(); g.translate(ex, ey); g.rotate(a);
+  g.fillStyle = col;
+  g.beginPath(); g.moveTo(9, 0); g.lineTo(-6, -6); g.lineTo(-6, 6); g.fill();
+  g.restore();
+  if (tag) {
+    g.fillStyle = col; g.font = "bold 12px serif"; g.textAlign = "center";
+    g.fillText(tag, ex - Math.cos(a) * 15, ey - Math.sin(a) * 15 + 4);
+    g.textAlign = "left";
+  }
+}
+
 function drawHud(s) {
+  for (const m of s.movers)
+    if (m.alive) edgeMark(s, m.x, m.y, m.kind === "pencil" ? "#c9a23a" : "#8a8073", null);
+  for (const h of HOLES) if (h.ok) edgeMark(s, h.x, h.y, "#c0392b", h.label);
+
   // 得点欄。ラベルだけ項目反応理論から借りている(ルールには関与しない)
   g.fillStyle = "rgba(24,27,32,0.86)";
   g.fillRect(0, 0, 196, 132);
